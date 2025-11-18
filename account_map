@@ -1,0 +1,10 @@
+CREATE OR REPLACE VIEW "account_map" AS 
+SELECT DISTINCT
+  "id" "account_id"
+, "ManagementAccountId" "parent_account_id"
+, "Email" "account_email_id"
+, "concat"((CASE WHEN (payer_id = '822143718403') THEN 'alz' WHEN (payer_id = '236398587497') THEN 'clz' WHEN (payer_id = '432622340087') THEN 'dlz' WHEN (payer_id = '094371848478') THEN 'flz' WHEN (payer_id = '999899873798') THEN 'wlz' ELSE payer_id END), '.', name) "account_name"
+, (CASE WHEN (payer_id = '822143718403') THEN 'alz' WHEN (payer_id = '236398587497') THEN 'clz' WHEN (payer_id = '432622340087') THEN 'dlz' WHEN (payer_id = '094371848478') THEN 'flz' WHEN (payer_id = '999899873798') THEN 'wlz' ELSE payer_id END) "landing_zone"
+FROM
+  "optimization_data"."organization_data"
+WHERE (NOT (payer_id LIKE 'organization-data%'))
