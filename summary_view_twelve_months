@@ -1,0 +1,170 @@
+CREATE OR REPLACE VIEW "summary_view_twelve_months" AS
+WITH
+  filtered_base AS (
+   SELECT *
+   FROM
+     default.summary_view_base
+   WHERE (billing_period >= date_trunc('month', (current_date - INTERVAL  '12' MONTH)))
+)
+, overall_totals AS (
+   SELECT
+     billing_period
+   , (((COALESCE(sum(unblended_cost) FILTER (WHERE ((charge_type = 'Credit') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))), 0) + COALESCE(sum(unblended_cost) FILTER (WHERE ((product_name LIKE '%AWS Support%') AND (landing_zone = 'Legacy'))), 0)) + COALESCE(sum(unblended_cost) FILTER (WHERE ((charge_type = 'BundledDiscount') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))), 0)) + COALESCE(sum(unblended_cost) FILTER (WHERE ((charge_type = 'Refund') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))), 0)) common_allocated_total
+   , sum(unblended_cost) FILTER (WHERE ((charge_type = 'Refund') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))) refund_total
+   , sum(unblended_cost) FILTER (WHERE ((product_name LIKE '%AWS Support%') AND (landing_zone = 'Legacy'))) support_total
+   , sum(unblended_cost) FILTER (WHERE ((charge_type = 'Credit') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))) credit_total
+   , sum(unblended_cost) FILTER (WHERE ((charge_type = 'BundledDiscount') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))) bundled_discount_total
+   , sum(unblended_cost) FILTER (WHERE ((charge_type = 'SavingsPlanNegation') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))) sp_negation_total
+   , sum(unblended_cost) FILTER (WHERE ((charge_type = 'SavingsPlanRecurringFee') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')))) sp_recurring_fee_total
+   , sum((-(unblended_cost) * 2.1E-1)) FILTER (WHERE ((charge_type = 'SavingsPlanRecurringFee') AND (account_name IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')))) sprf_disct_total
+   , sum(on_demand_cost_total) FILTER (WHERE (product_name = 'AWS Shield')) total_shield_cost
+   , sum(unblended_cost) FILTER (WHERE (product_code = 'OCBDataTransfer')) total_data_transfer_cost
+   , sum(on_demand_cost_total) FILTER (WHERE (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ'))) total_od_cost_overall
+   , sum(unblended_cost) FILTER (WHERE (((charge_type = 'Usage') OR (charge_type = 'SavingsPlanCoveredUsage')) AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')) AND ((product_name = 'Amazon Elastic Compute Cloud') OR (product_name = 'AWS Lambda') OR ((product_name = 'Amazon Elastic Container Service') AND (usage_type LIKE '%Fargate%'))))) total_sp_eligible_od_denom
+   FROM
+     filtered_base
+   GROUP BY billing_period
+)
+, account_totals AS (
+   SELECT
+     billing_period
+   , account_name
+   -- PPA Total: QuickSight equivalent
+   , sum(CASE WHEN ((charge_type = 'PrivateRateDiscount') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ'))) THEN unblended_cost ELSE 0 END) ppa_total
+   -- EDP Total: QuickSight equivalent  
+   , sum(CASE WHEN ((charge_type = 'EdpDiscount') AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ'))) THEN unblended_cost ELSE 0 END) edp_total
+   -- PPA Denominator: QuickSight PercentTotalODCostAcctDenom equivalent
+   , (sum(CASE WHEN (((charge_type = 'Usage') OR (charge_type = 'SavingsPlanCoveredUsage')) AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ'))) THEN unblended_cost ELSE 0 END) - 
+      sum(CASE WHEN ((product_name LIKE '%AWS Support%') AND (landing_zone = 'Legacy')) THEN unblended_cost ELSE 0 END)) total_od_cost_account
+   -- EDP Denominator: QuickSight PercentTotalODCostAcctDenom for non-Alight accounts (including DLZ exclusion)
+   , (sum(CASE WHEN (((charge_type = 'Usage') OR (charge_type = 'SavingsPlanCoveredUsage')) AND (landing_zone IN ('Legacy', 'CLZ', 'FLZ', 'DLZ')) AND (account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone'))) THEN unblended_cost ELSE 0 END) - 
+      sum(CASE WHEN ((product_name LIKE '%AWS Support%') AND (landing_zone = 'Legacy') AND (account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone'))) THEN unblended_cost ELSE 0 END)) total_od_cost_account_edp
+   FROM
+     filtered_base
+   GROUP BY billing_period, account_name
+)
+SELECT
+  base.year
+, base.month
+, base.billing_period
+, base.usage_date
+, base.payer_account_id
+, (CASE WHEN ((base.product_name = 'AWS Shield') AND (base.tag_business_service_name = 'Untagged')) THEN '427130756745' ELSE base.linked_account_id END) linked_account_id
+, base.tag_business_service_name
+, base.tag_schedule
+, base.tag_sub_service_name
+, base.invoice_id
+, base.reservation_effective_cost
+, base.reservation_unused_amortized_upfront_fee_for_billing_period
+, base.reservation_unused_recurring_fee
+, base.reservation_reservation_a_r_n
+, base.charge_type
+, base.charge_category
+, base.purchase_option
+, base.ri_sp_arn
+, base.product_code
+, base.product_name
+, base.service
+, base.product_family
+, base.usage_type
+, base.operation
+, base.item_description
+, base.availability_zone
+, base.region
+, base.instance_type_family
+, base.instance_type
+, base.platform
+, base.tenancy
+, base.processor
+, base.processor_features
+, base.database_engine
+, base.product_group
+, base.product_from_location
+, base.product_to_location
+, base.current_generation
+, base.legal_entity
+, base.billing_entity
+, base.pricing_unit
+, base.pricing_public_on_demand_rate
+, base.product_purchaseterm
+, base.reservation_start_time
+, base.reservation_end_time
+, base.savings_plan_offering_type
+, base.applicationservice
+, base.applicationname
+, base.operationalstatus
+, base.applicationserviceowner
+, base.lifecycle
+, base.approvalgroup
+, base.supportgroup
+, base.assignmentgroup
+, base.changecontrol
+, base.managedby
+, base.changegroup
+, base.businessservicename
+, base.businesssvcname_accountname
+, base.businesssvcname_costcenter
+, base.businesssvcname_costcenterdesc
+, base.businesssvcname_costcentermanager
+, base.umbrella
+, base.businesssvcname_project
+, base.accountcostctr_accountname
+, base.accountcostctr_costcenter
+, base.accountcostctr_costcenterdesc
+, base.chargeback
+, base.accountcostctr_costcentermanager
+, base.pnlowner
+, base.accountcostctr_project
+, base.account_name
+, (CASE WHEN ((base.product_name = 'AWS Shield') AND (base.tag_business_service_name = 'Untagged')) THEN '774308N' ELSE base.cost_center_final END) cost_center_final
+, (CASE WHEN ((base.product_name = 'AWS Shield') AND (base.tag_business_service_name = 'Untagged')) THEN 'Federal Security' ELSE base.cost_center_desc_final END) cost_center_desc_final
+, (CASE WHEN ((base.product_name = 'AWS Shield') AND (base.tag_business_service_name = 'Untagged')) THEN 'Barrett Gobeyn (1060310)' ELSE base.cost_center_manager_final END) cost_center_manager_final
+, (CASE WHEN ((base.product_name = 'AWS Shield') AND (base.tag_business_service_name = 'Untagged')) THEN 'Barrett Gobeyn (1060310)' ELSE base.umbrella_final END) umbrella_final
+, base.landing_zone
+, base.app_svc_validity
+, base.resource_id_count
+, base.usage_quantity
+, base.unblended_cost
+, base.amortized_cost
+, base.ri_sp_trueup
+, base.ri_sp_upfront_fees
+, base.public_cost
+, base.on_demand_cost_total
+, base.cost_center_final cost_center_final_reallocated
+, base.cost_center_desc_final cost_center_desc_final_reallocated
+, base.cost_center_manager_final cost_center_manager_final_reallocated
+, base.umbrella_final umbrella_final_reallocated
+, (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) on_demand_cost_total_adjusted
+, ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0)) percent_of_on_demand_cost
+, ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(account_totals.total_od_cost_account, 0)) percent_of_on_demand_acct_cost
+-- Fixed EDP percentage calculation to exclude DLZ Alight account
+, ((CASE WHEN (base.account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')) THEN (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) ELSE 0 END) / NULLIF(account_totals.total_od_cost_account_edp, 0)) percent_of_edp_acct_cost
+, (CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) sp_eligible_cost_total
+, ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0)) percent_of_sp_eligible_cost
+, overall_totals.common_allocated_total
+, overall_totals.refund_total
+, overall_totals.support_total
+, overall_totals.credit_total
+, overall_totals.bundled_discount_total
+, overall_totals.total_shield_cost
+, overall_totals.total_data_transfer_cost
+, base.on_demand_cost_total on_demand_cost_total_with_shield_realloc
+-- QuickSight equivalent allocations
+, COALESCE((overall_totals.total_data_transfer_cost * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0))), 0) data_transfer_alloc
+, COALESCE((overall_totals.common_allocated_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0))), 0) common_allocated_alloc
+, COALESCE((overall_totals.sp_negation_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0) sp_negation_alloc
+, COALESCE((overall_totals.sp_recurring_fee_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0) sp_recurring_fee_alloc
+, COALESCE((overall_totals.sprf_disct_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0) sprf_disct_alloc
+-- PPA Allocation: QuickSight PPA_Alloc equivalent
+, COALESCE((account_totals.ppa_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(account_totals.total_od_cost_account, 0))), 0) ppa_alloc
+-- EDP Allocation: QuickSight EDPAlloc equivalent (fixed to exclude DLZ Alight account)
+, COALESCE((account_totals.edp_total * ((CASE WHEN (base.account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')) THEN (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) ELSE 0 END) / NULLIF(account_totals.total_od_cost_account_edp, 0))), 0) edp_alloc
+-- QuickSight TotalCostPPAandEDP equivalent
+, (COALESCE((account_totals.ppa_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(account_totals.total_od_cost_account, 0))), 0) + COALESCE((account_totals.edp_total * ((CASE WHEN (base.account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')) THEN (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) ELSE 0 END) / NULLIF(account_totals.total_od_cost_account_edp, 0))), 0)) total_cost_ppa_and_edp
+, (COALESCE((overall_totals.common_allocated_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0))), 0) + (COALESCE((account_totals.ppa_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(account_totals.total_od_cost_account, 0))), 0) + COALESCE((account_totals.edp_total * ((CASE WHEN (base.account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')) THEN (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) ELSE 0 END) / NULLIF(account_totals.total_od_cost_account_edp, 0))), 0))) total_cost_common_alloc_ppa_edp
+-- Final Total Cost (fixed to exclude DLZ Alight account from EDP)
+, COALESCE((((((((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) + COALESCE((overall_totals.common_allocated_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0))), 0)) + (COALESCE((account_totals.ppa_total * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(account_totals.total_od_cost_account, 0))), 0) + COALESCE((account_totals.edp_total * ((CASE WHEN (base.account_name NOT IN ('clz.Alight Production Landing Zone', 'alz.alight-payer', 'flz.alight-fed-landing-zone', 'dlz.Alight Development LandingZone')) THEN (CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) ELSE 0 END) / NULLIF(account_totals.total_od_cost_account_edp, 0))), 0))) + COALESCE((overall_totals.sp_negation_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0)) + COALESCE((overall_totals.sp_recurring_fee_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0)) + COALESCE((overall_totals.sprf_disct_total * ((CASE WHEN (((base.charge_type = 'Usage') OR (base.charge_type = 'SavingsPlanCoveredUsage')) AND ((base.product_name = 'Amazon Elastic Compute Cloud') OR (base.product_name = 'AWS Lambda') OR ((base.product_name = 'Amazon Elastic Container Service') AND (base.usage_type LIKE '%Fargate%')))) THEN base.unblended_cost ELSE 0 END) / NULLIF(overall_totals.total_sp_eligible_od_denom, 0))), 0)) + COALESCE((overall_totals.total_data_transfer_cost * ((CASE WHEN (base.product_code = 'OCBDataTransfer') THEN 0 ELSE base.on_demand_cost_total END) / NULLIF(overall_totals.total_od_cost_overall, 0))), 0)), base.on_demand_cost_total) total_cost
+FROM
+  ((filtered_base base
+LEFT JOIN overall_totals ON (base.billing_period = overall_totals.billing_period))
+LEFT JOIN account_totals ON ((base.billing_period = account_totals.billing_period) AND (base.account_name = account_totals.account_name)))
